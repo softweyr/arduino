@@ -10,34 +10,12 @@
 // and help support open source hardware & software! -ada
 
 #include <Adafruit_GPS.h>
-#if ARDUINO >= 100
-// #include <SoftwareSerial.h>
-#else
-  // Older Arduino IDE requires NewSoftSerial, download from:
-  // http://arduiniana.org/libraries/newsoftserial/
-// #include <NewSoftSerial.h>
- // DO NOT install NewSoftSerial if using Arduino 1.0 or later!
-#endif
 
-// Connect the GPS Power pin to 5V
+// Connect the GPS Power pin to 5V (The USB pin will suffice if you have decent USB ports
 // Connect the GPS Ground pin to ground
-// If using software serial (sketch example default):
-//   Connect the GPS TX (transmit) pin to Digital 3
-//   Connect the GPS RX (receive) pin to Digital 2
-// If using hardware serial (e.g. Arduino Mega):
-//   Connect the GPS TX (transmit) pin to Arduino RX1, RX2 or RX3
-//   Connect the GPS RX (receive) pin to matching TX1, TX2 or TX3
+// Connect the GPS TX (transmit) pin to RXD0/Pin 16
+// Connect the GPS RX (receive) pin to TXD0/Pin 15
 
-// If using software serial, keep these lines enabled
-// (you can change the pin numbers to match your wiring):
-//#if ARDUINO >= 100
-//  SoftwareSerial mySerial(3, 2);
-//#else
-//  NewSoftSerial mySerial(3, 2);
-//#endif
-//Adafruit_GPS GPS(&mySerial);
-// If using hardware serial (e.g. Arduino Mega), comment
-// out the above six lines and enable this line instead:
 Adafruit_GPS GPS(&Serial1);
 
 
@@ -47,15 +25,13 @@ Adafruit_GPS GPS(&Serial1);
 
 // this keeps track of whether we're using the interrupt
 // off by default!
-boolean usingInterrupt = false;
 void useInterrupt(boolean); // Func prototype keeps Arduino 0023 happy
 
 void setup()  
 {    
-  // connect at 115200 so we can read the GPS fast enuf and
-  // also spit it out
+  // connect at 115200 so we can print the GPS output fast enough
   Serial.begin(115200);
-  Serial.println("Adafruit GPS library basic test!");
+  Serial.println("Adafruit GPS library M0 test!");
 
   // 9600 NMEA is the default baud rate for MTK - some use 4800
   GPS.begin(9600);
@@ -72,12 +48,15 @@ void setup()
   // Set the update rate
   // Note you must send both commands below to change both the output rate (how often the position
   // is written to the serial line), and the position fix rate.
+  
   // 1 Hz update rate
   //GPS.sendCommand(PMTK_SET_NMEA_UPDATE_1HZ);
   //GPS.sendCommand(PMTK_API_SET_FIX_CTL_1HZ);
+  
   // 5 Hz update rate- for 9600 baud you'll have to set the output to RMC or RMCGGA only (see above)
   GPS.sendCommand(PMTK_SET_NMEA_UPDATE_5HZ);
   GPS.sendCommand(PMTK_API_SET_FIX_CTL_5HZ);
+  
   // 10 Hz update rate - for 9600 baud you'll have to set the output to RMC only (see above)
   // Note the position can only be updated at most 5 times a second so it will lag behind serial output.
   //GPS.sendCommand(PMTK_SET_NMEA_UPDATE_10HZ);
@@ -94,35 +73,10 @@ void setup()
   delay(1000);
 }
 
-#if AVR
-// Interrupt is called once a millisecond, looks for any new GPS data, and stores it
-SIGNAL(TIMER0_COMPA_vect) {
-  char c = GPS.read();
-  // if you want to debug, this is a good time to do it!
-  if (GPSECHO)
-    if (c) UDR0 = c;  
-    // writing direct to UDR0 is much much faster than Serial.print 
-    // but only one character can be written at a time. 
-}
-
-void useInterrupt(boolean v) {
-  if (v) {
-    // Timer0 is already used for millis() - we'll just interrupt somewhere
-    // in the middle and call the "Compare A" function above
-    OCR0A = 0xAF;
-    TIMSK0 |= _BV(OCIE0A);
-    usingInterrupt = true;
-  } else {
-    // do not call the interrupt function COMPA anymore
-    TIMSK0 &= ~_BV(OCIE0A);
-    usingInterrupt = false;
-  }
-}
-#else
 // Interrupt code for ARM Cortex M0 (Feather M0)
-
-#define CPU_HZ 48000000
-#define TIMER_PRESCALER_DIV 1024
+//
+// Largely cribbed from
+// https://gist.github.com/jdneo/43be30d85080b175cb5aed3500d3f989
 
 void TC3_Handler()
 {
@@ -132,39 +86,30 @@ void TC3_Handler()
   if (TC->INTFLAG.bit.MC0 == 1) 
   {
     TC->INTFLAG.bit.MC0 = 1;
-    // Write callback here!!!
-    //digitalWrite(LED_PIN, isLEDOn);
-    //isLEDOn = !isLEDOn;
-    // And do GPS stuffs
+    // do GPS stuffs
     char c = GPS.read();
-    if (GPSECHO && c)
-      Serial.print(c);
+    if (GPSECHO && c) Serial.print(c);
   }
 }
+
+#define CPU_HZ 48000000
+#define TIMER_PRESCALER_DIV 1024
+
+#define SyncWAIT while (GCLK->STATUS.bit.SYNCBUSY == 1)
 
 void useInterrupt(boolean v) 
 {
   if (v) 
   {
-    // Setup 16-bit timer for our use:
-    REG_GCLK_CLKCTRL = (uint16_t) (GCLK_CLKCTRL_CLKEN | GCLK_CLKCTRL_GEN_GCLK0 | GCLK_CLKCTRL_ID_TCC2_TC3) ;
-    while ( GCLK->STATUS.bit.SYNCBUSY == 1 ); // wait for sync
-  
+    // Setup 16-bit timer on TC3 for our use:
+    REG_GCLK_CLKCTRL = (uint16_t) (GCLK_CLKCTRL_CLKEN | GCLK_CLKCTRL_GEN_GCLK0 | GCLK_CLKCTRL_ID_TCC2_TC3);
+    SyncWAIT;
+      
     TcCount16* TC = (TcCount16*) TC3;
-  
-    TC->CTRLA.reg &= ~TC_CTRLA_ENABLE;
-    while (TC->STATUS.bit.SYNCBUSY == 1); // wait for sync
-  
-    TC->CTRLA.reg |= TC_CTRLA_MODE_COUNT16;
-    while (TC->STATUS.bit.SYNCBUSY == 1); // wait for sync
-  
-    // Use match mode so that the timer counter resets when the count matches the compare register
-    TC->CTRLA.reg |= TC_CTRLA_WAVEGEN_MFRQ;
-    while (TC->STATUS.bit.SYNCBUSY == 1); // wait for sync
-  
-    // Set prescaler to 1024
-    TC->CTRLA.reg |= TC_CTRLA_PRESCALER_DIV1024;
-    while (TC->STATUS.bit.SYNCBUSY == 1); // wait for sync
+    TC->CTRLA.reg &= ~TC_CTRLA_ENABLE; SyncWAIT;
+    TC->CTRLA.reg |= TC_CTRLA_MODE_COUNT16; SyncWAIT;
+    TC->CTRLA.reg |= TC_CTRLA_WAVEGEN_MFRQ; SyncWAIT; // Reset timer counter on match
+    TC->CTRLA.reg |= TC_CTRLA_PRESCALER_DIV1024; SyncWAIT; // Prescalar CLK/1024
     
     // Interrupt every millisecond
     int compareValue = (CPU_HZ / (TIMER_PRESCALER_DIV * 1000)) - 1;
@@ -173,9 +118,8 @@ void useInterrupt(boolean v)
     // to prevent any jitter or disconnect when changing the compare value.
     TC->COUNT.reg = map(TC->COUNT.reg, 0, TC->CC[0].reg, 0, compareValue);
     TC->CC[0].reg = compareValue;
-    Serial.println(TC->COUNT.reg);
-    Serial.println(TC->CC[0].reg);
-    while (TC->STATUS.bit.SYNCBUSY == 1);
+    
+    Serial.println(TC->COUNT.reg); Serial.println(TC->CC[0].reg); SyncWAIT;
     
     // Enable the compare interrupt
     TC->INTENSET.reg = 0;
@@ -183,13 +127,16 @@ void useInterrupt(boolean v)
   
     NVIC_EnableIRQ(TC3_IRQn);
   
-    TC->CTRLA.reg |= TC_CTRLA_ENABLE;
-    while (TC->STATUS.bit.SYNCBUSY == 1); // wait for sync
+    TC->CTRLA.reg |= TC_CTRLA_ENABLE; SyncWAIT;
+  }
+  else
+  {
+    // Logically, I should turn the timer off here...
   }
 }
-#endif // AVR vs ARM
 
-void loop()                     // run over and over again
+
+void loop()
 {
    // do nothing! all reading and printing is done in the interrupt
 }
